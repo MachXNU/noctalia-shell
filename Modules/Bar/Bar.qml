@@ -9,6 +9,7 @@ import qs.Modules.Bar.Extras
 import qs.Modules.Notification
 import qs.Modules.Panels.Settings
 import qs.Services.Compositor
+import qs.Services.Media
 import qs.Services.UI
 import qs.Widgets
 
@@ -411,7 +412,10 @@ Item {
         MouseArea {
           anchors.fill: parent
           acceptedButtons: Qt.RightButton | Qt.MiddleButton
-          enabled: bar.barRightClickAction !== "none" || Settings.data.bar.middleClickAction !== "none"
+          // Keep enabled even when actions are "none" so we still swallow right/middle on
+          // empty bar gaps. Otherwise Qt Quick's context-menu path can crash on Wayland
+          // (QQuickDeliveryAgentPrivate::contextMenuTargets / mapToScene).
+          enabled: true
           hoverEnabled: false
           preventStealing: true
           onClicked: mouse => {
@@ -419,12 +423,14 @@ Item {
                          if (bar.isPointOverWidget(mouse.x, mouse.y))
                          return;
                          bar.handleEmptyBarClick(bar.barRightClickAction, Settings.data.bar.rightClickFollowMouse, Settings.data.bar.rightClickCommand, mouse);
+                         mouse.accepted = true;
                          return;
                        }
                        if (mouse.button === Qt.MiddleButton) {
                          if (bar.isPointOverWidget(mouse.x, mouse.y))
                          return;
                          bar.handleEmptyBarClick(Settings.data.bar.middleClickAction || "none", Settings.data.bar.middleClickFollowMouse, Settings.data.bar.middleClickCommand, mouse);
+                         mouse.accepted = true;
                          return;
                        }
                      }
@@ -441,7 +447,7 @@ Item {
           }
         }
 
-        // Scroll on empty bar area to switch workspaces
+        // Scroll on empty bar area action
         WheelHandler {
           id: barWheelHandler
           target: bar
@@ -449,8 +455,6 @@ Item {
           enabled: bar.barWheelAction !== "none"
 
           onWheel: function (event) {
-            if (bar.barWheelCooldown)
-              return;
             if (bar.isPointOverWidget(event.x, event.y))
               return;
 
@@ -458,9 +462,29 @@ Item {
             var dx = event.angleDelta.x;
             var useDy = Math.abs(dy) >= Math.abs(dx);
             var delta = useDy ? dy : dx;
+            var step = 120;
+
+            if (bar.barWheelAction === "volume") {
+              if (Settings.data.bar.reverseScroll)
+                delta *= -1;
+
+              bar.barWheelAccumulatedDelta += delta;
+              if (bar.barWheelAccumulatedDelta >= step) {
+                AudioService.increaseVolume();
+                bar.barWheelAccumulatedDelta = 0;
+                event.accepted = true;
+              } else if (bar.barWheelAccumulatedDelta <= -step) {
+                AudioService.decreaseVolume();
+                bar.barWheelAccumulatedDelta = 0;
+                event.accepted = true;
+              }
+              return;
+            }
+
+            if (bar.barWheelCooldown)
+              return;
 
             bar.barWheelAccumulatedDelta += delta;
-            var step = 120;
             if (Math.abs(bar.barWheelAccumulatedDelta) >= step) {
               var direction = bar.barWheelAccumulatedDelta > 0 ? -1 : 1;
               if (Settings.data.bar.reverseScroll)
@@ -499,7 +523,14 @@ Item {
         height: Style.marginS
         x: 0
         y: 0
-        onClicked: root.triggerFirstWidgetInSection("left")
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onClicked: function (mouse) {
+          if (mouse.button !== Qt.LeftButton) {
+            mouse.accepted = true;
+            return;
+          }
+          root.triggerFirstWidgetInSection("left");
+        }
       }
 
       // Bottom edge hot corner - triggers last widget in right (bottom) section
@@ -508,7 +539,14 @@ Item {
         height: Style.marginS
         x: 0
         anchors.bottom: parent.bottom
-        onClicked: root.triggerLastWidgetInSection("right")
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onClicked: function (mouse) {
+          if (mouse.button !== Qt.LeftButton) {
+            mouse.accepted = true;
+            return;
+          }
+          root.triggerLastWidgetInSection("right");
+        }
       }
 
       // Calculate margin to center widgets vertically within the bar height
@@ -606,7 +644,14 @@ Item {
         height: parent.height
         x: 0
         y: 0
-        onClicked: root.triggerFirstWidgetInSection("left")
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onClicked: function (mouse) {
+          if (mouse.button !== Qt.LeftButton) {
+            mouse.accepted = true;
+            return;
+          }
+          root.triggerFirstWidgetInSection("left");
+        }
       }
 
       // Right edge hot corner - triggers last widget in right section
@@ -615,7 +660,14 @@ Item {
         height: parent.height
         anchors.right: parent.right
         y: 0
-        onClicked: root.triggerLastWidgetInSection("right")
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onClicked: function (mouse) {
+          if (mouse.button !== Qt.LeftButton) {
+            mouse.accepted = true;
+            return;
+          }
+          root.triggerLastWidgetInSection("right");
+        }
       }
 
       // Calculate margin to center widgets horizontally within the bar height

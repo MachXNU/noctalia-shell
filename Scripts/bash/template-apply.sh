@@ -4,7 +4,7 @@
 if [ "$#" -lt 1 ]; then
     # Print usage information to standard error.
     echo "Error: No application specified." >&2
-    echo "Usage: $0 {kitty|ghostty|foot|alacritty|wezterm|fuzzel|walker|pywalfox|cava|yazi|labwc|niri|hyprland|sway|scroll|mango|btop|zathura} [dark|light]" >&2
+    echo "Usage: $0 {kitty|ghostty|foot|alacritty|wezterm|starship|fuzzel|walker|pywalfox|cava|yazi|labwc|niri|hyprland|sway|scroll|mango|btop|zathura} [dark|light]" >&2
     exit 1
 fi
 
@@ -14,12 +14,23 @@ MODE="${2:-}" # Optional second argument for dark/light mode
 # --- Apply theme based on the application name ---
 case "$APP_NAME" in
 kitty)
+    # Many configs use: include ./current-theme.conf
+    # Point it at the generated theme whenever the hook runs (including when noctalia.conf
+    # was unchanged on disk and the hook was forced from the template processor).
+    NOCTALIA_THEME="$HOME/.config/kitty/themes/noctalia.conf"
+    CURRENT_THEME="$HOME/.config/kitty/current-theme.conf"
+    if [ -f "$NOCTALIA_THEME" ]; then
+        mkdir -p "$HOME/.config/kitty"
+        ln -sf "themes/noctalia.conf" "$CURRENT_THEME"
+    fi
     KITTY_CONF="$HOME/.config/kitty/kitty.conf"
     if [ -w "$KITTY_CONF" ]; then
         kitty +kitten themes --reload-in=all noctalia
     else
         kitty +runpy "from kitty.utils import *; reload_conf_in_all_kitties()"
     fi
+    # Trigger kitty's live config reload after the template has been regenerated.
+    pkill -USR1 kitty >/dev/null 2>&1 || true
     ;;
 
 ghostty)
@@ -323,32 +334,56 @@ niri)
 hyprland)
     echo "🎨 Applying 'noctalia' theme to Hyprland..."
     CONFIG_DIR="$HOME/.config/hypr"
-    CONFIG_FILE="$CONFIG_DIR/hyprland.conf"
-    THEME_FILE="$CONFIG_DIR/noctalia/noctalia-colors.conf"
 
-    INCLUDE_LINE="source = $THEME_FILE"
+    CONF_CONFIG_FILE="$CONFIG_DIR/hyprland.conf"
+    LUA_CONFIG_FILE="$CONFIG_DIR/hyprland.lua"
 
-    # Check if the config file exists.
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "Config file not found, creating $CONFIG_FILE..."
-        mkdir -p "$(dirname "$CONFIG_FILE")"
-        echo -e "\n$INCLUDE_LINE\n" >"$CONFIG_FILE"
-        echo "Created new config file with noctalia theme."
+    CONF_THEME_FILE="$CONFIG_DIR/noctalia/noctalia-colors.conf"
+    LUA_THEME_FILE="$CONFIG_DIR/noctalia/noctalia-colors.lua"
+
+    CONF_INCLUDE_LINE="source = $CONF_THEME_FILE"
+    LUA_INCLUDE_LINE="dofile(\"$LUA_THEME_FILE\")"
+
+    # Prefer Lua config when present. .conf file is kept
+    # only for legacy compatibility
+    if [ -f "$LUA_CONFIG_FILE" ]; then
+      if grep -qF 'noctalia-colors.lua' "$LUA_CONFIG_FILE"; then
+        echo "Lua theme already included, skipping modification."
+      else
+        if [ -L "$LUA_CONFIG_FILE" ] && [ ! -w "$LUA_CONFIG_FILE" ]; then
+          echo "Detected read-only symlink, converting to local file..."
+          cp --remove-destination "$(readlink -f "$LUA_CONFIG_FILE")" "$LUA_CONFIG_FILE"
+          chmod +w "$LUA_CONFIG_FILE"
+        fi
+
+        printf "\n%s\n%s\n" \
+          "-- This loads Noctalia-generated Hyprland colors." \
+          "$LUA_INCLUDE_LINE" >> "$LUA_CONFIG_FILE"
+
+        echo "Added Noctalia Lua theme include to config."
+      fi
+
     else
-        if [ -L "$CONFIG_FILE" ] && [ ! -w "$CONFIG_FILE" ]; then
-            echo "Detected read-only symlink, converting to local file..."
-            cp --remove-destination "$(readlink -f "$CONFIG_FILE")" "$CONFIG_FILE"
-            chmod +w "$CONFIG_FILE"
-        fi
-
-        # Check if noctalia theme source already exists (flexible matching)
-        if grep -qE 'source\s*=\s*.*noctalia.*\.conf' "$CONFIG_FILE"; then
-            echo "Theme already included, skipping modification."
+      # Existing hyprlang behavior preserved for legacy users.
+      if [ ! -f "$CONF_CONFIG_FILE" ]; then
+        echo "Config file not found, creating $CONF_CONFIG_FILE..."
+        mkdir -p "$(dirname "$CONF_CONFIG_FILE")"
+        printf "\n%s\n" "$CONF_INCLUDE_LINE" > "$CONF_CONFIG_FILE"
+        echo "Created new config file with noctalia theme."
+      else
+        if grep -qE 'source\s*=\s*.*noctalia.*\.conf' "$CONF_CONFIG_FILE"; then
+          echo "Theme already included, skipping modification."
         else
-            # Add the include line to the end of the file
-            echo -e "\n$INCLUDE_LINE\n" >>"$CONFIG_FILE"
-            echo "✅ Added noctalia theme include to config."
+          if [ -L "$CONF_CONFIG_FILE" ] && [ ! -w "$CONF_CONFIG_FILE" ]; then
+            echo "Detected read-only symlink, converting to local file..."
+            cp --remove-destination "$(readlink -f "$CONF_CONFIG_FILE")" "$CONF_CONFIG_FILE"
+            chmod +w "$CONF_CONFIG_FILE"
+          fi
+
+          printf "\n%s\n" "$CONF_INCLUDE_LINE" >> "$CONF_CONFIG_FILE"
+          echo "Added noctalia theme include to config."
         fi
+      fi
     fi
 
     # Reload hyprland
@@ -372,6 +407,12 @@ sway)
         if grep -qE 'include\s+.*noctalia' "$CONFIG_FILE"; then
             echo "Theme already included, skipping modification."
         else
+            # Only convert symlink when we actually need to write (NixOS read-only symlinks)
+            if [ -L "$CONFIG_FILE" ] && [ ! -w "$CONFIG_FILE" ]; then
+                echo "Detected read-only symlink, converting to local file..."
+                cp --remove-destination "$(readlink -f "$CONFIG_FILE")" "$CONFIG_FILE"
+                chmod +w "$CONFIG_FILE"
+            fi
             # Add the include line to the end of the file
             echo -e "\n$INCLUDE_LINE\n" >>"$CONFIG_FILE"
             echo "✅ Added noctalia theme include to config."
@@ -399,6 +440,12 @@ scroll)
         if grep -qE 'include\s+.*noctalia' "$CONFIG_FILE"; then
             echo "Theme already included, skipping modification."
         else
+            # Only convert symlink when we actually need to write
+            if [ -L "$CONFIG_FILE" ] && [ ! -w "$CONFIG_FILE" ]; then
+                echo "Detected read-only symlink, converting to local file..."
+                cp --remove-destination "$(readlink -f "$CONFIG_FILE")" "$CONFIG_FILE"
+                chmod +w "$CONFIG_FILE"
+            fi
             # Add the include line to the end of the file
             echo -e "\n$INCLUDE_LINE\n" >>"$CONFIG_FILE"
             echo "Added noctalia theme include to config."
@@ -441,9 +488,24 @@ mango)
                 grep -E "^($COLOR_VARS)\s*=" "$conf_file" >>"$BACKUP_FILE"
 
                 # Remove color definitions from original file
-                sed -i -E "/^($COLOR_VARS)\s*=/d" "$conf_file"
+                if [ -L "$conf_file" ] && [ ! -w "$conf_file" ]; then
+                    # Read-only symlink (e.g. NixOS): convert to local file
+                    cp --remove-destination "$(readlink -f "$conf_file")" "$conf_file"
+                    chmod +w "$conf_file"
+                    sed -i -E "/^($COLOR_VARS)\s*=/d" "$conf_file"
+                else
+                    # Edit the real file, preserving any writable symlink
+                    sed -i -E "/^($COLOR_VARS)\s*=/d" "$(readlink -f "$conf_file")"
+                fi
             fi
         done
+
+        # Only convert symlink when we actually need to write
+        if [ -L "$MAIN_CONFIG" ] && [ ! -w "$MAIN_CONFIG" ]; then
+            echo "Detected read-only symlink, converting to local file..."
+            cp --remove-destination "$(readlink -f "$MAIN_CONFIG")" "$MAIN_CONFIG"
+            chmod +w "$MAIN_CONFIG"
+        fi
 
         # Add source line to main config
         if [ -f "$MAIN_CONFIG" ]; then
@@ -504,6 +566,75 @@ zathura)
             string:"source"
     done
     ;;
+
+starship)
+            PALETTE_FILE="$HOME/.cache/noctalia/starship-palette.toml"
+
+            # Respect STARSHIP_CONFIG env var, then fall back to standard lookup order
+            if [ -n "$STARSHIP_CONFIG" ]; then
+                CONFIG_FILE="$STARSHIP_CONFIG"
+            elif [ -f "$HOME/.config/starship.toml" ]; then
+                CONFIG_FILE="$HOME/.config/starship.toml"
+            elif [ -f "$HOME/.config/starship/starship.toml" ]; then
+                CONFIG_FILE="$HOME/.config/starship/starship.toml"
+            else
+                CONFIG_FILE="$HOME/.config/starship.toml"
+            fi
+
+            if [ ! -f "$PALETTE_FILE" ]; then
+                echo "Error: Starship palette file not found at $PALETTE_FILE" >&2
+                return 1
+            fi
+
+            MARKER_BEGIN='# >>> NOCTALIA STARSHIP PALETTE >>>'
+            MARKER_END='# <<< NOCTALIA STARSHIP PALETTE <<<'
+
+            # Create config file from scratch if it doesn't exist yet
+            if [ ! -f "$CONFIG_FILE" ]; then
+                mkdir -p "$(dirname "$CONFIG_FILE")"
+                {
+                    printf 'palette = "noctalia"\n\n'
+                    printf '%s\n' "$MARKER_BEGIN"
+                    cat "$PALETTE_FILE"
+                    printf '%s\n' "$MARKER_END"
+                } > "$CONFIG_FILE"
+                return 0
+            fi
+
+            # Follow symlinks so we edit the real file (safe for stow / dotfile managers)
+            if [ -L "$CONFIG_FILE" ]; then
+                CONFIG_FILE="$(readlink -f "$CONFIG_FILE")"
+            fi
+
+            # Set or insert top-level  palette = "noctalia"
+            if grep -qE '^[[:space:]]*palette[[:space:]]*=' "$CONFIG_FILE"; then
+                sed -i -E 's/^([[:space:]]*)palette([[:space:]]*)=.*/\1palette\2= "noctalia"/' "$CONFIG_FILE"
+            elif grep -qE '^[[:space:]]*"\$schema"' "$CONFIG_FILE"; then
+                sed -i '/^[[:space:]]*"\$schema"/a palette = "noctalia"' "$CONFIG_FILE"
+            else
+                sed -i '1i palette = "noctalia"' "$CONFIG_FILE"
+            fi
+
+            # Remove existing palette block using awk for literal string matching
+            # (avoids sed misinterpreting >, #, or other chars in the markers as regex)
+            if grep -qF "$MARKER_BEGIN" "$CONFIG_FILE"; then
+                awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" '
+                    $0 == begin { skip = 1; next }
+                    $0 == end   { skip = 0; next }
+                    !skip
+                ' "$CONFIG_FILE" > "${CONFIG_FILE}.noctalia.tmp" \
+                    && mv "${CONFIG_FILE}.noctalia.tmp" "$CONFIG_FILE"
+            fi
+
+            # Append fresh palette block, ensuring a clean newline boundary
+            {
+                printf '\n%s\n' "$MARKER_BEGIN"
+                cat "$PALETTE_FILE"
+                # Guard: ensure palette file ends with newline before closing marker
+                tail -c1 "$PALETTE_FILE" | grep -q $'\n' || printf '\n'
+                printf '%s\n' "$MARKER_END"
+            } >> "$CONFIG_FILE"
+            ;;
 
 *)
     # Handle unknown application names.
